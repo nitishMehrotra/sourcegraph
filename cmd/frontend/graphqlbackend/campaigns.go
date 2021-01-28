@@ -335,6 +335,7 @@ type CampaignsCredentialResolver interface {
 	ExternalServiceKind() string
 	ExternalServiceURL() string
 	CreatedAt() DateTime
+	HasSSHKey() bool
 }
 
 type ChangesetCountsArgs struct {
