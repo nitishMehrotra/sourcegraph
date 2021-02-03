@@ -267,10 +267,6 @@ func queryReferences(ctx context.Context, location Location) (locations []Locati
 		}
 	}
 
-	fmt.Printf("\n\n\n\n\n\n")
-	fmt.Printf("> %d\n", len(locations))
-	fmt.Printf("\n\n\n\n\n\n")
-
 	return locations, nil
 }
 
