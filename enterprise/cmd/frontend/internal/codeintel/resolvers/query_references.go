@@ -146,8 +146,6 @@ func (r *queryResolver) References(ctx context.Context, line, character, limit i
 	// on a non-definition that is defined in another index.
 
 	for i := range worklist {
-		// TODO(efritz) - keep track of indexes
-
 		for _, moniker := range worklist[i].OrderedMonikers {
 			// TODO - wtf
 			// if moniker.Kind != "export" {
@@ -159,10 +157,7 @@ func (r *queryResolver) References(ctx context.Context, line, character, limit i
 			if err != nil {
 				return nil, "", err
 			}
-			if !exists {
-				continue
-			}
-			if definitionUpload.ID == worklist[i].Upload.ID {
+			if !exists || definitionUpload.ID == worklist[i].Upload.ID {
 				continue
 			}
 
@@ -188,8 +183,6 @@ func (r *queryResolver) References(ctx context.Context, line, character, limit i
 	// set of references within the same repository (but outside of the source index).
 
 	for i := range worklist {
-		// TODO(efritz) - keep track of indexes
-
 		for _, moniker := range worklist[i].OrderedMonikers {
 			// TODO - wtf
 			// if moniker.Kind != "import" {
@@ -242,8 +235,6 @@ func (r *queryResolver) References(ctx context.Context, line, character, limit i
 	// set of references outside of the source repository.
 
 	for i := range worklist {
-		// TODO(efritz) - keep track of indexes
-
 		for _, moniker := range worklist[i].OrderedMonikers {
 			// TODO - wtf
 			// if moniker.Kind != "import" {
