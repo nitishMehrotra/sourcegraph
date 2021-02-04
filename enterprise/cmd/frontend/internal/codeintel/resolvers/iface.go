@@ -29,6 +29,12 @@ type DBStore interface {
 	DeleteIndexByID(ctx context.Context, id int) (bool, error)
 	GetIndexConfigurationByRepositoryID(ctx context.Context, repositoryID int) (store.IndexConfiguration, bool, error)
 	UpdateIndexConfigurationByRepositoryID(ctx context.Context, repositoryID int, data []byte) error
+
+	//
+	//
+
+	RemoteUploadCount(ctx context.Context, repositoryID int, commit, scheme, name, version string, limit int) (int, error)
+	RemoteUploads(ctx context.Context, repositoryID int, commit, scheme, name, version string, limit, offset int) ([]lsifstore.PackageReference, error)
 }
 
 type DBStoreShim struct {

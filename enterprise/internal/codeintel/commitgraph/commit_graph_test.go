@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+
 	"github.com/sourcegraph/sourcegraph/enterprise/internal/codeintel/gitserver"
 )
 
@@ -176,7 +177,7 @@ func BenchmarkCalculateVisibleUploads(b *testing.B) {
 	uploadsByCommit, links := NewGraph(commitGraph, commitGraphView).Gather()
 
 	var numUploads int
-	for uploads := range uploadsByCommit {
+	for _, uploads := range uploadsByCommit {
 		numUploads += len(uploads)
 	}
 

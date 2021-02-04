@@ -39,6 +39,76 @@ func scanPackageReferences(rows *sql.Rows, queryErr error) (_ []lsifstore.Packag
 	return references, nil
 }
 
+// TODO - test
+// TODO - rename
+func (s *Store) RemoteUploadCount(ctx context.Context, repositoryID int, commit, scheme, name, version string, limit int) (_ int, err error) {
+	// TODO - observe
+
+	totalCount, _, err := basestore.ScanFirstInt(s.Query(ctx, sqlf.Sprintf(
+		remoteUploadsCountQuery,
+		makeRemoteUploadsCondition(repositoryID, commit, scheme, name, version),
+	)))
+	if err != nil {
+		return 0, err
+	}
+
+	return totalCount, nil
+}
+
+const remoteUploadsCountQuery = `
+-- source: enterprise/internal/codeintel/stores/dbstore/references.go:RemoteUploads
+SELECT COUNT(*) FROM lsif_references r
+LEFT JOIN lsif_dumps_with_repository_name d ON d.id = r.dump_id
+WHERE %s
+`
+
+// TODO - test
+// TODO - rename
+// TODO - paginate
+func (s *Store) RemoteUploads(ctx context.Context, repositoryID int, commit, scheme, name, version string, limit, offset int) (_ []lsifstore.PackageReference, err error) {
+	// TODO - observe
+
+	packages, err := scanPackageReferences(s.Query(ctx, sqlf.Sprintf(
+		remoteUploadsQuery,
+		makeRemoteUploadsCondition(repositoryID, commit, scheme, name, version),
+		repositoryID,
+		limit,
+		offset,
+	)))
+	if err != nil {
+		return nil, err
+	}
+
+	return packages, nil
+}
+
+const remoteUploadsQuery = `
+-- source: enterprise/internal/codeintel/stores/dbstore/references.go:RemoteUploads
+SELECT d.id, r.scheme, r.name, r.version, r.filter FROM lsif_references r
+LEFT JOIN lsif_dumps_with_repository_name d ON d.id = r.dump_id
+WHERE %s ORDER BY repository_id = %s DESC, d.repository_id, d.root LIMIT %d OFFSET %d
+`
+
+func makeRemoteUploadsCondition(repositoryID int, commit, scheme, name, version string) *sqlf.Query {
+	// TODO - clean this up
+	return sqlf.Join([]*sqlf.Query{
+		sqlf.Sprintf("r.scheme = %s", scheme),
+		sqlf.Sprintf("r.name = %s", name),
+		sqlf.Sprintf("r.version = %s", version),
+		sqlf.Sprintf("(%s)", sqlf.Join([]*sqlf.Query{
+			sqlf.Sprintf("r.dump_id IN (%s)", makeVisibleUploadsQuery(repositoryID, commit)),
+			sqlf.Sprintf("(%s)", sqlf.Join([]*sqlf.Query{
+				sqlf.Sprintf("d.repository_id != %s", repositoryID),
+				sqlf.Sprintf("EXISTS (SELECT 1 FROM lsif_uploads_visible_at_tip WHERE repository_id = d.repository_id AND upload_id = d.id)"),
+			}, " AND ")),
+		}, " OR ")),
+	}, " AND ")
+}
+
+//
+//
+//
+
 // SameRepoPager returns a ReferencePager for dumps that belong to the given repository and commit and reference the package with the
 // given scheme, name, and version.
 func (s *Store) SameRepoPager(ctx context.Context, repositoryID int, commit, scheme, name, version string, limit int) (_ int, _ ReferencePager, err error) {
