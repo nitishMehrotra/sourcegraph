@@ -4,15 +4,15 @@ import { ChangesetStatusCell } from './ChangesetStatusCell'
 import { HiddenExternalChangesetInfoCell } from './HiddenExternalChangesetInfoCell'
 
 export interface HiddenExternalChangesetNodeProps {
-    node: Pick<HiddenExternalChangesetFields, 'id' | 'nextSyncAt' | 'updatedAt' | 'state'>
+    node: Pick<HiddenExternalChangesetFields, 'id' | 'nextSyncAt' | 'updatedAt' | 'state' | '__typename'>
 }
 
 export const HiddenExternalChangesetNode: React.FunctionComponent<HiddenExternalChangesetNodeProps> = ({ node }) => (
     <>
         <span className="d-none d-sm-block" />
         <ChangesetStatusCell
-            changeset={node}
-            className="p-2 hidden-external-changeset-node__status d-block d-sm-flex"
+            state={node.state}
+            className="p-2 hidden-external-changeset-node__status text-muted d-block d-sm-flex"
         />
         <HiddenExternalChangesetInfoCell node={node} className="p-2 hidden-external-changeset-node__information" />
         <span className="d-none d-sm-block" />

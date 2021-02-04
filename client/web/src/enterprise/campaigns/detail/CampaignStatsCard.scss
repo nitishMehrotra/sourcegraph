@@ -19,6 +19,12 @@
             font-weight: 600;
         }
     }
+    &__diff-stat {
+        @include media-breakpoint-down(sm) {
+            margin-top: 1rem;
+            flex-basis: 100%;
+        }
+    }
     &__stat {
         min-width: 0;
         @include media-breakpoint-down(sm) {
@@ -32,5 +38,9 @@
             padding-left: 0.5rem;
             padding-right: 0.5rem;
         }
+    }
+    &__divider {
+        border: 1px solid var(--border-color-2);
+        height: 2rem;
     }
 }

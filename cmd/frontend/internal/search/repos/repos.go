@@ -19,7 +19,7 @@ import (
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/envvar"
 	"github.com/sourcegraph/sourcegraph/internal/api"
 	"github.com/sourcegraph/sourcegraph/internal/conf"
-	"github.com/sourcegraph/sourcegraph/internal/db"
+	"github.com/sourcegraph/sourcegraph/internal/database"
 	"github.com/sourcegraph/sourcegraph/internal/gitserver"
 	"github.com/sourcegraph/sourcegraph/internal/goroutine"
 	"github.com/sourcegraph/sourcegraph/internal/search"
@@ -39,7 +39,15 @@ type Resolved struct {
 	OverLimit       bool
 }
 
-func ResolveRepositories(ctx context.Context, op Options) (Resolved, error) {
+type Resolver struct {
+	Zoekt            *searchbackend.Zoekt
+	DefaultReposFunc defaultReposFunc
+	NamespaceStore   interface {
+		GetByName(context.Context, string) (*database.Namespace, error)
+	}
+}
+
+func (r *Resolver) Resolve(ctx context.Context, op Options) (Resolved, error) {
 	var err error
 	tr, ctx := trace.New(ctx, "resolveRepositories", op.String())
 	defer func() {
@@ -99,11 +107,16 @@ func ResolveRepositories(ctx context.Context, op Options) (Resolved, error) {
 		}
 	}
 
+	searchContext, err := resolveSearchContextSpec(ctx, op.SearchContextSpec, r.NamespaceStore.GetByName)
+	if err != nil {
+		return Resolved{}, err
+	}
+
 	var defaultRepos []*types.RepoName
 
-	if envvar.SourcegraphDotComMode() && len(includePatterns) == 0 && !hasTypeRepo(op.Query) {
+	if envvar.SourcegraphDotComMode() && len(includePatterns) == 0 && !hasTypeRepo(op.Query) && isGlobalSearchContext(searchContext) {
 		start := time.Now()
-		defaultRepos, err = defaultRepositories(ctx, db.GlobalDefaultRepos.List, search.Indexed(), excludePatterns)
+		defaultRepos, err = defaultRepositories(ctx, r.DefaultReposFunc, r.Zoekt, excludePatterns)
 		if err != nil {
 			return Resolved{}, errors.Wrap(err, "getting list of default repos")
 		}
@@ -124,18 +137,22 @@ func ResolveRepositories(ctx context.Context, op Options) (Resolved, error) {
 		}
 	} else {
 		tr.LazyPrintf("Repos.List - start")
-		options := db.ReposListOptions{
+		options := database.ReposListOptions{
 			IncludePatterns: includePatterns,
 			Names:           versionContextRepositories,
 			ExcludePattern:  UnionRegExps(excludePatterns),
 			// List N+1 repos so we can see if there are repos omitted due to our repo limit.
-			LimitOffset:  &db.LimitOffset{Limit: maxRepoListSize + 1},
+			LimitOffset:  &database.LimitOffset{Limit: maxRepoListSize + 1},
 			NoForks:      op.NoForks,
 			OnlyForks:    op.OnlyForks,
 			NoArchived:   op.NoArchived,
 			OnlyArchived: op.OnlyArchived,
 			NoPrivate:    op.OnlyPublic,
 			OnlyPrivate:  op.OnlyPrivate,
+		}
+
+		if searchContext != nil && searchContext.UserID != 0 {
+			options.UserID = searchContext.UserID
 		}
 
 		// PERF: We Query concurrently since Count and List call can be slow
@@ -145,7 +162,7 @@ func ResolveRepositories(ctx context.Context, op Options) (Resolved, error) {
 			excludedC <- computeExcludedRepositories(ctx, op.Query, options)
 		}()
 
-		repos, err = db.GlobalRepos.ListRepoNames(ctx, options)
+		repos, err = database.GlobalRepos.ListRepoNames(ctx, options)
 		tr.LazyPrintf("Repos.List - done")
 
 		excluded = <-excludedC
@@ -262,6 +279,7 @@ type Options struct {
 	RepoFilters        []string
 	MinusRepoFilters   []string
 	RepoGroupFilters   []string
+	SearchContextSpec  string
 	VersionContextName string
 	UserSettings       *schema.Settings
 	NoForks            bool
@@ -400,6 +418,40 @@ func resolveVersionContext(versionContext string) (*schema.VersionContext, error
 	return nil, errors.New("version context not found")
 }
 
+const globalSearchContextName = "global"
+
+type getNamespaceByNameFunc func(ctx context.Context, name string) (*database.Namespace, error)
+
+func resolveSearchContextSpec(ctx context.Context, searchContextSpec string, getNamespaceByName getNamespaceByNameFunc) (*types.SearchContext, error) {
+	if !envvar.SourcegraphDotComMode() {
+		return nil, nil
+	}
+
+	if isGlobalSearchContextSpec(searchContextSpec) {
+		return &types.SearchContext{Name: globalSearchContextName}, nil
+	} else if strings.HasPrefix(searchContextSpec, "@") {
+		name := searchContextSpec[1:]
+		namespace, err := getNamespaceByName(ctx, name)
+		if err != nil {
+			return nil, err
+		}
+		if namespace.User == 0 {
+			return nil, errors.Errorf("search context '%s' not found", searchContextSpec)
+		}
+		return &types.SearchContext{Name: name, UserID: namespace.User}, nil
+	}
+	return nil, errors.Errorf("search context '%s' does not have the correct format (global or @username)", searchContextSpec)
+}
+
+func isGlobalSearchContextSpec(searchContextSpec string) bool {
+	// Empty search context spec resolves to global search context
+	return searchContextSpec == "" || searchContextSpec == globalSearchContextName
+}
+
+func isGlobalSearchContext(searchContext *types.SearchContext) bool {
+	return searchContext != nil && searchContext.Name == globalSearchContextName
+}
+
 // Cf. golang/go/src/regexp/syntax/parse.go.
 const regexpFlags = regexpsyntax.ClassNL | regexpsyntax.PerlX | regexpsyntax.UnicodeGroups
 
@@ -411,7 +463,7 @@ type ExcludedRepos struct {
 
 // computeExcludedRepositories returns a list of excluded repositories (Forks or
 // archives) based on the search Query.
-func computeExcludedRepositories(ctx context.Context, q query.QueryInfo, op db.ReposListOptions) (excluded ExcludedRepos) {
+func computeExcludedRepositories(ctx context.Context, q query.QueryInfo, op database.ReposListOptions) (excluded ExcludedRepos) {
 	if q == nil {
 		return ExcludedRepos{}
 	}
@@ -422,8 +474,8 @@ func computeExcludedRepositories(ctx context.Context, q query.QueryInfo, op db.R
 	var numExcludedForks, numExcludedArchived int
 
 	forkStr, _ := q.StringValue(query.FieldFork)
-	fork := ParseYesNoOnly(forkStr)
-	if fork == Invalid && !ExactlyOneRepo(op.IncludePatterns) {
+	fork := query.ParseYesNoOnly(forkStr)
+	if fork == query.Invalid && !ExactlyOneRepo(op.IncludePatterns) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -433,7 +485,7 @@ func computeExcludedRepositories(ctx context.Context, q query.QueryInfo, op db.R
 			selectForks.OnlyForks = true
 			selectForks.NoForks = false
 			var err error
-			numExcludedForks, err = db.GlobalRepos.Count(ctx, selectForks)
+			numExcludedForks, err = database.GlobalRepos.Count(ctx, selectForks)
 			if err != nil {
 				log15.Warn("repo count for excluded fork", "err", err)
 			}
@@ -441,8 +493,8 @@ func computeExcludedRepositories(ctx context.Context, q query.QueryInfo, op db.R
 	}
 
 	archivedStr, _ := q.StringValue(query.FieldArchived)
-	archived := ParseYesNoOnly(archivedStr)
-	if archived == Invalid && !ExactlyOneRepo(op.IncludePatterns) {
+	archived := query.ParseYesNoOnly(archivedStr)
+	if archived == query.Invalid && !ExactlyOneRepo(op.IncludePatterns) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -452,7 +504,7 @@ func computeExcludedRepositories(ctx context.Context, q query.QueryInfo, op db.R
 			selectArchived.OnlyArchived = true
 			selectArchived.NoArchived = false
 			var err error
-			numExcludedArchived, err = db.GlobalRepos.Count(ctx, selectArchived)
+			numExcludedArchived, err = database.GlobalRepos.Count(ctx, selectArchived)
 			if err != nil {
 				log15.Warn("repo count for excluded archive", "err", err)
 			}
@@ -573,10 +625,10 @@ func hasTypeRepo(q query.QueryInfo) bool {
 type defaultReposFunc func(ctx context.Context) ([]*types.RepoName, error)
 
 func defaultRepositories(ctx context.Context, getRawDefaultRepos defaultReposFunc, z *searchbackend.Zoekt, excludePatterns []string) ([]*types.RepoName, error) {
-	// Get the list of default repos from the db.
+	// Get the list of default repos from the database.
 	defaultRepos, err := getRawDefaultRepos(ctx)
 	if err != nil {
-		return nil, errors.Wrap(err, "querying db for default repos")
+		return nil, errors.Wrap(err, "querying database for default repos")
 	}
 
 	// Remove excluded repos

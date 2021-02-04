@@ -15,9 +15,9 @@ import (
 	"github.com/pkg/errors"
 
 	"github.com/sourcegraph/sourcegraph/internal/api"
-	idb "github.com/sourcegraph/sourcegraph/internal/db"
-	"github.com/sourcegraph/sourcegraph/internal/db/basestore"
-	"github.com/sourcegraph/sourcegraph/internal/db/dbutil"
+	"github.com/sourcegraph/sourcegraph/internal/database"
+	"github.com/sourcegraph/sourcegraph/internal/database/basestore"
+	"github.com/sourcegraph/sourcegraph/internal/database/dbutil"
 	"github.com/sourcegraph/sourcegraph/internal/logging"
 	"github.com/sourcegraph/sourcegraph/internal/trace"
 	"github.com/sourcegraph/sourcegraph/internal/types"
@@ -33,10 +33,10 @@ type Store struct {
 	Metrics StoreMetrics
 	// Used for tracing calls to store methods. Uses opentracing.GlobalTracer() by default.
 	Tracer trace.Tracer
-	// RepoStore is a db.RepoStore using the same database handle.
-	RepoStore *idb.RepoStore
-	// ExternalServiceStore is a db.ExternalServiceStore using the same database handle.
-	ExternalServiceStore *idb.ExternalServiceStore
+	// RepoStore is a database.RepoStore using the same database handle.
+	RepoStore *database.RepoStore
+	// ExternalServiceStore is a database.ExternalServiceStore using the same database handle.
+	ExternalServiceStore *database.ExternalServiceStore
 	// Used to mock calls to certain methods.
 	Mocks MockStore
 
@@ -49,8 +49,8 @@ func NewStore(db dbutil.DB, txOpts sql.TxOptions) *Store {
 	s := basestore.NewWithDB(db, txOpts)
 	return &Store{
 		Store:                s,
-		RepoStore:            idb.ReposWith(s),
-		ExternalServiceStore: idb.ExternalServicesWith(s),
+		RepoStore:            database.ReposWith(s),
+		ExternalServiceStore: database.ExternalServicesWith(s),
 		Log:                  log15.Root(),
 		Tracer:               trace.Tracer{Tracer: opentracing.GlobalTracer()},
 	}
@@ -379,33 +379,6 @@ SET cloned = true
 WHERE repo.id IN (SELECT id FROM cloned_repos) AND NOT cloned
 `
 
-// CountNotClonedRepos returns the number of repos whose cloned column is true.
-func (s *Store) CountNotClonedRepos(ctx context.Context) (count uint64, err error) {
-	tr, ctx := s.trace(ctx, "Store.CountNotClonedRepos")
-
-	defer func(began time.Time) {
-		secs := time.Since(began).Seconds()
-
-		s.Metrics.CountNotClonedRepos.Observe(secs, float64(count), &err)
-		logging.Log(s.Log, "store.count-not-cloned-repos", &err, "count", count)
-
-		tr.SetError(err)
-		tr.Finish()
-	}(time.Now())
-
-	q := sqlf.Sprintf(CountNotClonedReposQueryFmtstr)
-	c, ok, err := basestore.ScanFirstInt(s.Query(ctx, q))
-	if err != nil || !ok {
-		return 0, err
-	}
-	return uint64(c), nil
-}
-
-const CountNotClonedReposQueryFmtstr = `
--- source: internal/repos/store.go:DBStore.CountNotClonedRepos
-SELECT COUNT(*) FROM repo WHERE deleted_at IS NULL AND NOT cloned
-`
-
 // CountUserAddedRepos counts the total number of repos that have been added
 // by user owned external services.
 func (s *Store) CountUserAddedRepos(ctx context.Context) (count uint64, err error) {
@@ -597,7 +570,7 @@ func (s *Store) UpsertRepos(ctx context.Context, repos ...*types.Repo) (err erro
 	return nil
 }
 
-func (s *Store) EnqueueSyncJobs(ctx context.Context, ignoreSiteAdmin bool) (err error) {
+func (s *Store) EnqueueSyncJobs(ctx context.Context, isCloud bool) (err error) {
 	tr, ctx := s.trace(ctx, "Store.EnqueueSyncJobs")
 
 	defer func(began time.Time) {
@@ -608,8 +581,10 @@ func (s *Store) EnqueueSyncJobs(ctx context.Context, ignoreSiteAdmin bool) (err 
 	}(time.Now())
 
 	filter := "TRUE"
-	if ignoreSiteAdmin {
-		filter = "namespace_user_id IS NOT NULL"
+	// On Cloud we don't sync our default sources in the background, they are synced
+	// on demand instead.
+	if isCloud {
+		filter = "cloud_default = false"
 	}
 	q := sqlf.Sprintf(enqueueSyncJobsQueryFmtstr, sqlf.Sprintf(filter))
 	return s.Exec(ctx, q)

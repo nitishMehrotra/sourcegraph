@@ -10,8 +10,8 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/keegancsmith/sqlf"
 
-	"github.com/sourcegraph/sourcegraph/internal/db/dbconn"
-	"github.com/sourcegraph/sourcegraph/internal/db/dbtesting"
+	"github.com/sourcegraph/sourcegraph/internal/database/dbconn"
+	"github.com/sourcegraph/sourcegraph/internal/database/dbtesting"
 )
 
 func TestGetUploadByID(t *testing.T) {
@@ -250,6 +250,7 @@ func TestGetUploads(t *testing.T) {
 		term           string
 		visibleAtTip   bool
 		uploadedBefore *time.Time
+		uploadedAfter  *time.Time
 		oldestFirst    bool
 		expectedIDs    []int
 	}{
@@ -265,6 +266,7 @@ func TestGetUploads(t *testing.T) {
 		{term: "bAr", expectedIDs: []int{4, 6}},              // search repo names
 		{visibleAtTip: true, expectedIDs: []int{2, 5, 7, 8}},
 		{uploadedBefore: &t5, expectedIDs: []int{6, 7, 8, 9, 10}},
+		{uploadedAfter: &t4, expectedIDs: []int{1, 2, 3}},
 	}
 
 	for _, testCase := range testCases {
@@ -290,6 +292,7 @@ func TestGetUploads(t *testing.T) {
 					Term:           testCase.term,
 					VisibleAtTip:   testCase.visibleAtTip,
 					UploadedBefore: testCase.uploadedBefore,
+					UploadedAfter:  testCase.uploadedAfter,
 					OldestFirst:    testCase.oldestFirst,
 					Limit:          3,
 					Offset:         lo,

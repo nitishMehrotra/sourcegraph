@@ -23,13 +23,14 @@ import (
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/envvar"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/globals"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/graphqlbackend"
+	"github.com/sourcegraph/sourcegraph/cmd/frontend/internal/app/ui"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/internal/app/updatecheck"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/internal/bg"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/internal/cli/loghandlers"
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/internal/siteid"
 	"github.com/sourcegraph/sourcegraph/internal/conf"
-	"github.com/sourcegraph/sourcegraph/internal/db/dbconn"
-	"github.com/sourcegraph/sourcegraph/internal/db/dbutil"
+	"github.com/sourcegraph/sourcegraph/internal/database/dbconn"
+	"github.com/sourcegraph/sourcegraph/internal/database/dbutil"
 	"github.com/sourcegraph/sourcegraph/internal/debugserver"
 	"github.com/sourcegraph/sourcegraph/internal/env"
 	"github.com/sourcegraph/sourcegraph/internal/goroutine"
@@ -108,7 +109,7 @@ func InitDB() (*sql.DB, error) {
 			return dbconn.Global, nil
 		}
 
-		if err := dbconn.MigrateDB(dbconn.Global, "frontend"); err != nil {
+		if err := dbconn.MigrateDB(dbconn.Global, dbconn.Frontend); err != nil {
 			return nil, err
 		}
 
@@ -129,6 +130,8 @@ func Main(enterpriseSetupHook func() enterprise.Services) error {
 	if err != nil {
 		log.Fatalf("ERROR: %v", err)
 	}
+
+	ui.InitRouter()
 
 	if err := handleConfigOverrides(); err != nil {
 		log.Fatal("applying config overrides:", err)

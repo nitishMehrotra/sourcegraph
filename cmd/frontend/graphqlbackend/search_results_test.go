@@ -16,7 +16,7 @@ import (
 
 	searchrepos "github.com/sourcegraph/sourcegraph/cmd/frontend/internal/search/repos"
 	"github.com/sourcegraph/sourcegraph/internal/api"
-	"github.com/sourcegraph/sourcegraph/internal/db"
+	"github.com/sourcegraph/sourcegraph/internal/database"
 	"github.com/sourcegraph/sourcegraph/internal/extsvc"
 	"github.com/sourcegraph/sourcegraph/internal/search"
 	searchbackend "github.com/sourcegraph/sourcegraph/internal/search/backend"
@@ -26,7 +26,7 @@ import (
 	"github.com/sourcegraph/sourcegraph/schema"
 )
 
-var mockCount = func(_ context.Context, options db.ReposListOptions) (int, error) { return 0, nil }
+var mockCount = func(_ context.Context, options database.ReposListOptions) (int, error) { return 0, nil }
 
 func assertEqual(t *testing.T, got, want interface{}) {
 	t.Helper()
@@ -37,7 +37,7 @@ func assertEqual(t *testing.T, got, want interface{}) {
 }
 
 func TestSearchResults(t *testing.T) {
-	limitOffset := &db.LimitOffset{Limit: searchrepos.SearchLimits().MaxRepos + 1}
+	limitOffset := &database.LimitOffset{Limit: searchrepos.SearchLimits().MaxRepos + 1}
 
 	getResults := func(t *testing.T, query, version string) []string {
 		r, err := (&schemaResolver{}).Search(context.Background(), &SearchArgs{Query: query, Version: version})
@@ -89,7 +89,7 @@ func TestSearchResults(t *testing.T) {
 		defer func() { mockDecodedViewerFinalSettings = nil }()
 
 		var calledReposListRepoNames bool
-		db.Mocks.Repos.ListRepoNames = func(_ context.Context, op db.ReposListOptions) ([]*types.RepoName, error) {
+		database.Mocks.Repos.ListRepoNames = func(_ context.Context, op database.ReposListOptions) ([]*types.RepoName, error) {
 			calledReposListRepoNames = true
 
 			// Validate that the following options are invariant
@@ -100,9 +100,9 @@ func TestSearchResults(t *testing.T) {
 
 			return []*types.RepoName{{ID: 1, Name: "repo"}}, nil
 		}
-		db.Mocks.Repos.MockGetByName(t, "repo", 1)
-		db.Mocks.Repos.MockGet(t, 1)
-		db.Mocks.Repos.Count = mockCount
+		database.Mocks.Repos.MockGetByName(t, "repo", 1)
+		database.Mocks.Repos.MockGet(t, 1)
+		database.Mocks.Repos.Count = mockCount
 
 		mockSearchFilesInRepos = func(args *search.TextParameters) ([]*FileMatchResolver, *streaming.Stats, error) {
 			return nil, &streaming.Stats{}, nil
@@ -123,7 +123,7 @@ func TestSearchResults(t *testing.T) {
 		defer func() { mockDecodedViewerFinalSettings = nil }()
 
 		var calledReposListRepoNames bool
-		db.Mocks.Repos.ListRepoNames = func(_ context.Context, op db.ReposListOptions) ([]*types.RepoName, error) {
+		database.Mocks.Repos.ListRepoNames = func(_ context.Context, op database.ReposListOptions) ([]*types.RepoName, error) {
 			calledReposListRepoNames = true
 
 			// Validate that the following options are invariant
@@ -133,10 +133,10 @@ func TestSearchResults(t *testing.T) {
 
 			return []*types.RepoName{{ID: 1, Name: "repo"}}, nil
 		}
-		defer func() { db.Mocks = db.MockStores{} }()
-		db.Mocks.Repos.MockGetByName(t, "repo", 1)
-		db.Mocks.Repos.MockGet(t, 1)
-		db.Mocks.Repos.Count = mockCount
+		defer func() { database.Mocks = database.MockStores{} }()
+		database.Mocks.Repos.MockGetByName(t, "repo", 1)
+		database.Mocks.Repos.MockGet(t, 1)
+		database.Mocks.Repos.Count = mockCount
 
 		calledSearchRepositories := false
 		mockSearchRepositories = func(args *search.TextParameters) ([]SearchResultResolver, *streaming.Stats, error) {
@@ -188,7 +188,7 @@ func TestSearchResults(t *testing.T) {
 		defer func() { mockDecodedViewerFinalSettings = nil }()
 
 		var calledReposListRepoNames bool
-		db.Mocks.Repos.ListRepoNames = func(_ context.Context, op db.ReposListOptions) ([]*types.RepoName, error) {
+		database.Mocks.Repos.ListRepoNames = func(_ context.Context, op database.ReposListOptions) ([]*types.RepoName, error) {
 			calledReposListRepoNames = true
 
 			// Validate that the following options are invariant
@@ -198,10 +198,10 @@ func TestSearchResults(t *testing.T) {
 
 			return []*types.RepoName{{ID: 1, Name: "repo"}}, nil
 		}
-		defer func() { db.Mocks = db.MockStores{} }()
-		db.Mocks.Repos.MockGetByName(t, "repo", 1)
-		db.Mocks.Repos.MockGet(t, 1)
-		db.Mocks.Repos.Count = mockCount
+		defer func() { database.Mocks = database.MockStores{} }()
+		database.Mocks.Repos.MockGetByName(t, "repo", 1)
+		database.Mocks.Repos.MockGet(t, 1)
+		database.Mocks.Repos.Count = mockCount
 
 		calledSearchRepositories := false
 		mockSearchRepositories = func(args *search.TextParameters) ([]SearchResultResolver, *streaming.Stats, error) {
@@ -313,10 +313,10 @@ func TestProcessSearchPattern(t *testing.T) {
 			Want:    "search me",
 		},
 		{
-			Name:    "Regexp with content field ignores default pattern",
-			Pattern: `content:"search me" ignored`,
+			Name:    "Regexp with content field sequences non-content pattern",
+			Pattern: `content:"search me" pattern`,
 			Opts:    &getPatternInfoOptions{},
-			Want:    "search me",
+			Want:    "(search me).*?(pattern)",
 		},
 		{
 			Name:    "Literal with quoted content field means double quotes are not part of the pattern",
@@ -333,7 +333,7 @@ func TestProcessSearchPattern(t *testing.T) {
 	}
 	for _, tt := range cases {
 		t.Run(tt.Name, func(t *testing.T) {
-			q, _ := query.ParseAndCheck(tt.Pattern)
+			q, _ := query.ParseRegexp(tt.Pattern)
 			got, _, _, _ := processSearchPattern(q, tt.Opts)
 			if got != tt.Want {
 				t.Fatalf("got %s\nwant %s", got, tt.Want)
@@ -521,7 +521,7 @@ func TestSearchResolver_getPatternInfo(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			sr := searchResolver{query: query}
+			sr := searchResolver{SearchInputs: &SearchInputs{Query: query}}
 			p, err := sr.getPatternInfo(nil)
 			if err != nil {
 				t.Fatal(err)
@@ -660,6 +660,27 @@ func TestSearchResolver_DynamicFilters(t *testing.T) {
 			},
 		},
 
+		{
+			descr: "javascript filters",
+			searchResults: []SearchResultResolver{
+				fileMatch("/jsrender.min.js.map"),
+				fileMatch("playground/react/lib/app.js.map"),
+				fileMatch("assets/javascripts/bootstrap.min.js"),
+			},
+			expectedDynamicFilterStrsRegexp: map[string]struct{}{
+				`repo:^testRepo$`:  {},
+				`-file:\.min\.js$`: {},
+				`-file:\.js\.map$`: {},
+				`lang:javascript`:  {},
+			},
+			expectedDynamicFilterStrsGlobbing: map[string]struct{}{
+				`repo:testRepo`:   {},
+				`-file:**.min.js`: {},
+				`-file:**.js.map`: {},
+				`lang:javascript`: {},
+			},
+		},
+
 		// If there are no search results, no filters should be displayed.
 		{
 			descr:                             "no results",
@@ -784,16 +805,16 @@ func TestSearchResultsHydration(t *testing.T) {
 		Fork:         false,
 	}
 
-	db.Mocks.Repos.Get = func(ctx context.Context, id api.RepoID) (*types.Repo, error) {
+	database.Mocks.Repos.Get = func(ctx context.Context, id api.RepoID) (*types.Repo, error) {
 		return hydratedRepo, nil
 	}
 
-	db.Mocks.Repos.ListRepoNames = func(_ context.Context, op db.ReposListOptions) ([]*types.RepoName, error) {
+	database.Mocks.Repos.ListRepoNames = func(_ context.Context, op database.ReposListOptions) ([]*types.RepoName, error) {
 		return []*types.RepoName{{ID: repoWithIDs.ID, Name: repoWithIDs.Name}}, nil
 	}
-	db.Mocks.Repos.Count = mockCount
+	database.Mocks.Repos.Count = mockCount
 
-	defer func() { db.Mocks = db.MockStores{} }()
+	defer func() { database.Mocks = database.MockStores{} }()
 
 	zoektRepo := &zoekt.RepoListEntry{
 		Repository: zoekt.Repository{
@@ -829,7 +850,15 @@ func TestSearchResultsHydration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolver := &searchResolver{query: q, zoekt: z, userSettings: &schema.Settings{}, reposMu: &sync.Mutex{}, resolved: &searchrepos.Resolved{}}
+	resolver := &searchResolver{
+		SearchInputs: &SearchInputs{
+			Query:        q,
+			UserSettings: &schema.Settings{},
+		},
+		zoekt:    z,
+		reposMu:  &sync.Mutex{},
+		resolved: &searchrepos.Resolved{},
+	}
 	results, err := resolver.Results(ctx)
 	if err != nil {
 		t.Fatal("Results:", err)
@@ -863,20 +892,20 @@ func TestCheckDiffCommitSearchLimits(t *testing.T) {
 			name:        "diff_search_warns_on_repos_greater_than_search_limit",
 			resultType:  "diff",
 			numRepoRevs: 51,
-			wantError:   RepoLimitErr{ResultType: "diff", Max: 50},
+			wantError:   &RepoLimitError{ResultType: "diff", Max: 50},
 		},
 		{
 			name:        "commit_search_warns_on_repos_greater_than_search_limit",
 			resultType:  "commit",
 			numRepoRevs: 51,
-			wantError:   RepoLimitErr{ResultType: "commit", Max: 50},
+			wantError:   &RepoLimitError{ResultType: "commit", Max: 50},
 		},
 		{
 			name:        "commit_search_warns_on_repos_greater_than_search_limit_with_time_filter",
 			fields:      []query.Node{query.Parameter{Field: "after"}},
 			resultType:  "commit",
 			numRepoRevs: 20000,
-			wantError:   TimeLimitErr{ResultType: "commit", Max: 10000},
+			wantError:   &TimeLimitError{ResultType: "commit", Max: 10000},
 		},
 		{
 			name:        "no_warning_when_commit_search_within_search_limit",
@@ -962,11 +991,13 @@ func Test_SearchResultsResolver_ApproximateResultCount(t *testing.T) {
 			fields: fields{
 				results: []SearchResultResolver{
 					&FileMatchResolver{
-						symbols: []*searchSymbolResult{
-							// 1
-							{},
-							// 2
-							{},
+						FileMatch: FileMatch{
+							symbols: []*searchSymbolResult{
+								// 1
+								{},
+								// 2
+								{},
+							},
 						},
 					},
 				},
@@ -979,11 +1010,13 @@ func Test_SearchResultsResolver_ApproximateResultCount(t *testing.T) {
 			fields: fields{
 				results: []SearchResultResolver{
 					&FileMatchResolver{
-						symbols: []*searchSymbolResult{
-							// 1
-							{},
-							// 2
-							{},
+						FileMatch: FileMatch{
+							symbols: []*searchSymbolResult{
+								// 1
+								{},
+								// 2
+								{},
+							},
 						},
 					},
 				},
@@ -1055,7 +1088,7 @@ func TestGetExactFilePatterns(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			r := searchResolver{query: q, originalQuery: tt.in}
+			r := searchResolver{SearchInputs: &SearchInputs{Query: q, OriginalQuery: tt.in}}
 			if got := r.getExactFilePatterns(); !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("getExactFilePatterns() = %v, want %v", got, tt.want)
 			}
@@ -1065,10 +1098,10 @@ func TestGetExactFilePatterns(t *testing.T) {
 
 func TestCompareSearchResults(t *testing.T) {
 	makeResult := func(repo, file string) *FileMatchResolver {
-		return &FileMatchResolver{
-			Repo:  &RepositoryResolver{innerRepo: &types.Repo{Name: api.RepoName(repo)}},
+		return mkFileMatchResolver(FileMatch{
+			Repo:  &types.RepoName{Name: api.RepoName(repo)},
 			JPath: file,
-		}
+		})
 	}
 
 	tests := []struct {
@@ -1239,23 +1272,28 @@ func TestEvaluateAnd(t *testing.T) {
 
 			ctx := context.Background()
 
-			db.Mocks.Repos.ListRepoNames = func(_ context.Context, op db.ReposListOptions) ([]*types.RepoName, error) {
+			database.Mocks.Repos.ListRepoNames = func(_ context.Context, op database.ReposListOptions) ([]*types.RepoName, error) {
 				repoNames := make([]*types.RepoName, len(minimalRepos))
 				for i := range minimalRepos {
 					repoNames[i] = &types.RepoName{ID: minimalRepos[i].ID, Name: minimalRepos[i].Name}
 				}
 				return repoNames, nil
 			}
-			db.Mocks.Repos.Count = func(ctx context.Context, opt db.ReposListOptions) (int, error) {
+			database.Mocks.Repos.Count = func(ctx context.Context, opt database.ReposListOptions) (int, error) {
 				return len(minimalRepos), nil
 			}
-			defer func() { db.Mocks = db.MockStores{} }()
+			defer func() { database.Mocks = database.MockStores{} }()
 
 			q, err := query.ProcessAndOr(tt.query, query.ParserOptions{SearchType: query.SearchTypeLiteral})
 			if err != nil {
 				t.Fatal(err)
 			}
-			resolver := &searchResolver{query: q, zoekt: z, userSettings: &schema.Settings{}, reposMu: &sync.Mutex{}, resolved: &searchrepos.Resolved{}}
+			resolver := &searchResolver{
+				SearchInputs: &SearchInputs{Query: q, UserSettings: &schema.Settings{}},
+				zoekt:        z,
+				reposMu:      &sync.Mutex{},
+				resolved:     &searchrepos.Resolved{},
+			}
 			results, err := resolver.Results(ctx)
 			if err != nil {
 				t.Fatal("Results:", err)

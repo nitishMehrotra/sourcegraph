@@ -7,9 +7,8 @@ import (
 	"github.com/graph-gophers/graphql-go/gqltesting"
 
 	"github.com/sourcegraph/sourcegraph/cmd/frontend/backend"
-	"github.com/sourcegraph/sourcegraph/internal/db"
-	"github.com/sourcegraph/sourcegraph/internal/repoupdater"
-	"github.com/sourcegraph/sourcegraph/internal/repoupdater/protocol"
+	"github.com/sourcegraph/sourcegraph/internal/database"
+	"github.com/sourcegraph/sourcegraph/internal/repos"
 	"github.com/sourcegraph/sourcegraph/internal/types"
 )
 
@@ -50,10 +49,10 @@ func TestStatusMessages(t *testing.T) {
 	})
 
 	t.Run("authenticated as non-site-admin", func(t *testing.T) {
-		db.Mocks.Users.GetByCurrentAuthUser = func(ctx context.Context) (*types.User, error) {
+		database.Mocks.Users.GetByCurrentAuthUser = func(ctx context.Context) (*types.User, error) {
 			return &types.User{ID: 1, SiteAdmin: false}, nil
 		}
-		defer func() { db.Mocks.Users.GetByCurrentAuthUser = nil }()
+		defer func() { database.Mocks.Users.GetByCurrentAuthUser = nil }()
 
 		result, err := (&schemaResolver{}).StatusMessages(context.Background())
 		if want := backend.ErrMustBeSiteAdmin; err != want {
@@ -65,16 +64,15 @@ func TestStatusMessages(t *testing.T) {
 	})
 
 	t.Run("no messages", func(t *testing.T) {
-		db.Mocks.Users.GetByCurrentAuthUser = func(ctx context.Context) (*types.User, error) {
+		database.Mocks.Users.GetByCurrentAuthUser = func(ctx context.Context) (*types.User, error) {
 			return &types.User{ID: 1, SiteAdmin: true}, nil
 		}
-		defer func() { db.Mocks.Users.GetByCurrentAuthUser = nil }()
+		defer func() { database.Mocks.Users.GetByCurrentAuthUser = nil }()
 
-		repoupdater.MockStatusMessages = func(_ context.Context) (*protocol.StatusMessagesResponse, error) {
-			res := &protocol.StatusMessagesResponse{Messages: []protocol.StatusMessage{}}
-			return res, nil
+		repos.MockStatusMessages = func(_ context.Context) ([]repos.StatusMessage, error) {
+			return []repos.StatusMessage{}, nil
 		}
-		defer func() { repoupdater.MockStatusMessages = nil }()
+		defer func() { repos.MockStatusMessages = nil }()
 
 		gqltesting.RunTests(t, []*gqltesting.Test{
 			{
@@ -90,38 +88,38 @@ func TestStatusMessages(t *testing.T) {
 	})
 
 	t.Run("messages", func(t *testing.T) {
-		db.Mocks.Users.GetByCurrentAuthUser = func(ctx context.Context) (*types.User, error) {
+		database.Mocks.Users.GetByCurrentAuthUser = func(ctx context.Context) (*types.User, error) {
 			return &types.User{ID: 1, SiteAdmin: true}, nil
 		}
-		defer func() { db.Mocks.Users.GetByCurrentAuthUser = nil }()
+		defer func() { database.Mocks.Users.GetByCurrentAuthUser = nil }()
 
-		db.Mocks.ExternalServices.GetByID = func(id int64) (*types.ExternalService, error) {
+		database.Mocks.ExternalServices.GetByID = func(id int64) (*types.ExternalService, error) {
 			return &types.ExternalService{ID: 1, DisplayName: "GitHub.com testing"}, nil
 		}
-		defer func() { db.Mocks.ExternalServices.GetByID = nil }()
+		defer func() { database.Mocks.ExternalServices.GetByID = nil }()
 
-		repoupdater.MockStatusMessages = func(_ context.Context) (*protocol.StatusMessagesResponse, error) {
-			res := &protocol.StatusMessagesResponse{Messages: []protocol.StatusMessage{
+		repos.MockStatusMessages = func(_ context.Context) ([]repos.StatusMessage, error) {
+			res := []repos.StatusMessage{
 				{
-					Cloning: &protocol.CloningProgress{
+					Cloning: &repos.CloningProgress{
 						Message: "Currently cloning 5 repositories in parallel...",
 					},
 				},
 				{
-					ExternalServiceSyncError: &protocol.ExternalServiceSyncError{
+					ExternalServiceSyncError: &repos.ExternalServiceSyncError{
 						Message:           "Authentication failed. Please check credentials.",
 						ExternalServiceId: 1,
 					},
 				},
 				{
-					SyncError: &protocol.SyncError{
+					SyncError: &repos.SyncError{
 						Message: "Could not save to database",
 					},
 				},
-			}}
+			}
 			return res, nil
 		}
-		defer func() { repoupdater.MockStatusMessages = nil }()
+		defer func() { repos.MockStatusMessages = nil }()
 
 		gqltesting.RunTests(t, []*gqltesting.Test{
 			{

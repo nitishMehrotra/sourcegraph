@@ -16,7 +16,7 @@ import (
 	searchrepos "github.com/sourcegraph/sourcegraph/cmd/frontend/internal/search/repos"
 	"github.com/sourcegraph/sourcegraph/internal/api"
 	"github.com/sourcegraph/sourcegraph/internal/conf"
-	"github.com/sourcegraph/sourcegraph/internal/db"
+	"github.com/sourcegraph/sourcegraph/internal/database"
 	"github.com/sourcegraph/sourcegraph/internal/search"
 	"github.com/sourcegraph/sourcegraph/internal/search/query"
 	querytypes "github.com/sourcegraph/sourcegraph/internal/search/query/types"
@@ -34,22 +34,22 @@ func TestSearch(t *testing.T) {
 		name                         string
 		searchQuery                  string
 		searchVersion                string
-		reposListMock                func(v0 context.Context, v1 db.ReposListOptions) ([]*types.Repo, error)
+		reposListMock                func(v0 context.Context, v1 database.ReposListOptions) ([]*types.Repo, error)
 		repoRevsMock                 func(spec string, opt git.ResolveRevisionOptions) (api.CommitID, error)
-		externalServicesListMock     func(opt db.ExternalServicesListOptions) ([]*types.ExternalService, error)
+		externalServicesListMock     func(opt database.ExternalServicesListOptions) ([]*types.ExternalService, error)
 		phabricatorGetRepoByNameMock func(repo api.RepoName) (*types.PhabricatorRepo, error)
 		wantResults                  Results
 	}{
 		{
 			name:        "empty query against no repos gets no results",
 			searchQuery: "",
-			reposListMock: func(v0 context.Context, v1 db.ReposListOptions) ([]*types.Repo, error) {
+			reposListMock: func(v0 context.Context, v1 database.ReposListOptions) ([]*types.Repo, error) {
 				return nil, nil
 			},
 			repoRevsMock: func(spec string, opt git.ResolveRevisionOptions) (api.CommitID, error) {
 				return "", nil
 			},
-			externalServicesListMock: func(opt db.ExternalServicesListOptions) ([]*types.ExternalService, error) {
+			externalServicesListMock: func(opt database.ExternalServicesListOptions) ([]*types.ExternalService, error) {
 				return nil, nil
 			},
 			phabricatorGetRepoByNameMock: func(repo api.RepoName) (*types.PhabricatorRepo, error) {
@@ -64,7 +64,7 @@ func TestSearch(t *testing.T) {
 		{
 			name:        "empty query against empty repo gets no results",
 			searchQuery: "",
-			reposListMock: func(v0 context.Context, v1 db.ReposListOptions) ([]*types.Repo, error) {
+			reposListMock: func(v0 context.Context, v1 database.ReposListOptions) ([]*types.Repo, error) {
 				return []*types.Repo{{Name: "test"}},
 
 					nil
@@ -72,7 +72,7 @@ func TestSearch(t *testing.T) {
 			repoRevsMock: func(spec string, opt git.ResolveRevisionOptions) (api.CommitID, error) {
 				return "", nil
 			},
-			externalServicesListMock: func(opt db.ExternalServicesListOptions) ([]*types.ExternalService, error) {
+			externalServicesListMock: func(opt database.ExternalServicesListOptions) ([]*types.ExternalService, error) {
 				return nil, nil
 			},
 			phabricatorGetRepoByNameMock: func(repo api.RepoName) (*types.PhabricatorRepo, error) {
@@ -94,14 +94,14 @@ func TestSearch(t *testing.T) {
 			mockDecodedViewerFinalSettings = &schema.Settings{}
 			defer func() { mockDecodedViewerFinalSettings = nil }()
 
-			db.Mocks.Repos.List = tc.reposListMock
+			database.Mocks.Repos.List = tc.reposListMock
 			sr := &schemaResolver{}
 			schema, err := graphql.ParseSchema(Schema, sr, graphql.Tracer(prometheusTracer{}))
 			if err != nil {
 				t.Fatal(err)
 			}
-			db.Mocks.ExternalServices.List = tc.externalServicesListMock
-			db.Mocks.Phabricator.GetByName = tc.phabricatorGetRepoByNameMock
+			database.Mocks.ExternalServices.List = tc.externalServicesListMock
+			database.Mocks.Phabricator.GetByName = tc.phabricatorGetRepoByNameMock
 			git.Mocks.ResolveRevision = tc.repoRevsMock
 			result := schema.Exec(context.Background(), testSearchGQLQuery, "", vars)
 			if len(result.Errors) > 0 {
@@ -338,51 +338,13 @@ func TestExactlyOneRepo(t *testing.T) {
 func TestQuoteSuggestions(t *testing.T) {
 	t.Run("regex error", func(t *testing.T) {
 		raw := "*"
-		_, err := query.Process(raw, query.SearchTypeRegex)
+		_, err := query.ParseRegexp(raw)
 		if err == nil {
-			t.Fatalf("error returned from query.Process(%q) is nil", raw)
+			t.Fatalf("error returned from query.ParseRegexp(%q) is nil", raw)
 		}
 		alert := alertForQuery(raw, err)
-		if !strings.Contains(strings.ToLower(alert.title), "regexp") {
-			t.Errorf("title is '%s', want it to contain 'regexp'", alert.title)
-		}
-		if !strings.Contains(alert.description, "regular expression") {
-			t.Errorf("description is '%s', want it to contain 'regular expression'", alert.description)
-		}
-	})
-
-	t.Run("type error that is not a regex error should show a suggestion", func(t *testing.T) {
-		raw := "-foobar"
-		_, alert := query.Process(raw, query.SearchTypeRegex)
-		if alert == nil {
-			t.Fatalf("alert returned from query.Process(%q) is nil", raw)
-		}
-	})
-
-	t.Run("query parse error", func(t *testing.T) {
-		raw := ":"
-		_, err := query.Process(raw, query.SearchTypeRegex)
-		if err == nil {
-			t.Fatalf("error returned from query.Process(%q) is nil", raw)
-		}
-		alert := alertForQuery(raw, err)
-		if strings.Contains(strings.ToLower(alert.title), "regexp") {
-			t.Errorf("title is '%s', want it not to contain 'regexp'", alert.title)
-		}
-		if strings.Contains(alert.description, "regular expression") {
-			t.Errorf("description is '%s', want it not to contain 'regular expression'", alert.description)
-		}
-	})
-
-	t.Run("negated file field with an invalid regex", func(t *testing.T) {
-		raw := "-f:(a"
-		_, err := query.Process(raw, query.SearchTypeRegex)
-		if err == nil {
-			t.Fatal("query.Process failed to detect the invalid regex in the f: field")
-		}
-		alert := alertForQuery(raw, err)
-		if len(alert.proposedQueries) != 1 {
-			t.Fatalf("got %d proposed queries (%v), want exactly 1", len(alert.proposedQueries), alert.proposedQueries)
+		if !strings.Contains(alert.description, "regexp") {
+			t.Errorf("description is '%s', want it to contain 'regexp'", alert.description)
 		}
 	})
 }
@@ -460,7 +422,7 @@ func TestVersionContext(t *testing.T) {
 		name           string
 		searchQuery    string
 		versionContext string
-		// db.ReposListOptions.Names
+		// database.ReposListOptions.Names
 		wantReposListOptionsNames []string
 		reposGetListNames         []string
 		wantResults               []string
@@ -538,22 +500,24 @@ func TestVersionContext(t *testing.T) {
 	}}
 	for _, tc := range tcs {
 		t.Run(tc.name, func(t *testing.T) {
-			qinfo, err := query.ParseAndCheck(tc.searchQuery)
+			q, err := query.ParseLiteral(tc.searchQuery)
 			if err != nil {
 				t.Fatal(err)
 			}
 
 			resolver := searchResolver{
-				query:          qinfo,
-				versionContext: &tc.versionContext,
-				userSettings:   &schema.Settings{},
-				reposMu:        &sync.Mutex{},
-				resolved:       &searchrepos.Resolved{},
+				SearchInputs: &SearchInputs{
+					Query:          q,
+					VersionContext: &tc.versionContext,
+					UserSettings:   &schema.Settings{},
+				},
+				reposMu:  &sync.Mutex{},
+				resolved: &searchrepos.Resolved{},
 			}
 
-			db.Mocks.Repos.ListRepoNames = func(ctx context.Context, opts db.ReposListOptions) ([]*types.RepoName, error) {
+			database.Mocks.Repos.ListRepoNames = func(ctx context.Context, opts database.ReposListOptions) ([]*types.RepoName, error) {
 				if diff := cmp.Diff(tc.wantReposListOptionsNames, opts.Names, cmpopts.EquateEmpty()); diff != "" {
-					t.Fatalf("db.RepostListOptions.Names mismatch (-want, +got):\n%s", diff)
+					t.Fatalf("database.RepostListOptions.Names mismatch (-want, +got):\n%s", diff)
 				}
 				var repos []*types.RepoName
 				for _, name := range tc.reposGetListNames {
@@ -589,12 +553,12 @@ func mkFileMatch(repo *types.RepoName, path string, lineNumbers ...int32) *FileM
 	for _, n := range lineNumbers {
 		lines = append(lines, &lineMatch{JLineNumber: n})
 	}
-	return &FileMatchResolver{
+	return mkFileMatchResolver(FileMatch{
 		uri:          fileMatchURI(repo.Name, "", path),
 		JPath:        path,
 		JLineMatches: lines,
-		Repo:         &RepositoryResolver{innerRepo: repo.ToRepo()},
-	}
+		Repo:         repo,
+	})
 }
 
 func repoRev(revSpec string) *search.RepositoryRevisions {

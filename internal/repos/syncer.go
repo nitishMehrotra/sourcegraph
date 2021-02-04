@@ -18,7 +18,7 @@ import (
 
 	"github.com/sourcegraph/sourcegraph/internal/api"
 	"github.com/sourcegraph/sourcegraph/internal/conf"
-	"github.com/sourcegraph/sourcegraph/internal/db"
+	"github.com/sourcegraph/sourcegraph/internal/database"
 	"github.com/sourcegraph/sourcegraph/internal/errcode"
 	"github.com/sourcegraph/sourcegraph/internal/trace"
 	"github.com/sourcegraph/sourcegraph/internal/types"
@@ -54,12 +54,6 @@ type Syncer struct {
 	// UserReposMaxPerSite can be used to override the value read from config.
 	// If zero, we'll read from config instead.
 	UserReposMaxPerSite int
-
-	// syncErrors contains the last error returned by the Sourcer during each
-	// sync per external service. It's reset with each service sync and if the sync produced no error, it's
-	// set to nil.
-	syncErrors   map[int64]error
-	syncErrorsMu sync.Mutex
 
 	enqueueSignal signal
 }
@@ -182,12 +176,11 @@ func (s *Syncer) SyncExternalService(ctx context.Context, tx *Store, externalSer
 
 	ctx, save := s.observe(ctx, "Syncer.SyncExternalService", "")
 	defer save(&diff, &err)
-	defer s.setOrResetLastSyncErr(externalServiceID, &err)
 
 	ids := []int64{externalServiceID}
 	// We don't use tx here as the sourcing process below can be slow and we don't
 	// want to hold a lock on the external_services table for too long.
-	svcs, err := s.Store.ExternalServiceStore.List(ctx, db.ExternalServicesListOptions{IDs: ids})
+	svcs, err := s.Store.ExternalServiceStore.List(ctx, database.ExternalServicesListOptions{IDs: ids})
 	if err != nil {
 		return errors.Wrap(err, "fetching external services")
 	}
@@ -240,7 +233,7 @@ func (s *Syncer) SyncExternalService(ctx context.Context, tx *Store, externalSer
 
 	// Fetch repos from the source
 	var sourced types.Repos
-	if sourced, err = s.sourced(ctx, svcs, onSourced); err != nil {
+	if sourced, err = s.sourced(ctx, svc, onSourced); err != nil {
 		unauthorized = errcode.IsUnauthorized(err)
 		accountSuspended = errcode.IsAccountSuspended(err)
 
@@ -248,7 +241,7 @@ func (s *Syncer) SyncExternalService(ctx context.Context, tx *Store, externalSer
 		// should behave as if zero repos were found. This is so that revoked tokens
 		// cause repos to be removed correctly.
 		if !unauthorized && !accountSuspended {
-			return errors.Wrap(err, "syncer.sync.sourced")
+			return errors.Wrap(err, "fetching from code host")
 		}
 		log15.Warn("Non fatal error during sync", "externalService", svc.ID, "unauthorized", unauthorized, "accountSuspended", accountSuspended)
 	}
@@ -256,7 +249,7 @@ func (s *Syncer) SyncExternalService(ctx context.Context, tx *Store, externalSer
 	// Unless explicitly specified with the "all" setting or the owner of the service has the "AllowUserExternalServicePrivate" tag,
 	// user added external services should only sync public code.
 	if isUserOwned && conf.ExternalServiceUserMode() != conf.ExternalServiceModeAll {
-		ok, err := db.GlobalUsers.HasTag(ctx, svc.NamespaceUserID, db.TagAllowUserExternalServicePrivate)
+		ok, err := database.GlobalUsers.HasTag(ctx, svc.NamespaceUserID, database.TagAllowUserExternalServicePrivate)
 		if err != nil {
 			return errors.Wrap(err, "checking user tag")
 		}
@@ -267,7 +260,7 @@ func (s *Syncer) SyncExternalService(ctx context.Context, tx *Store, externalSer
 
 	var storedServiceRepos types.Repos
 	// Fetch repos from our DB related to externalServiceID
-	if storedServiceRepos, err = tx.RepoStore.List(ctx, db.ReposListOptions{ExternalServiceIDs: []int64{externalServiceID}}); err != nil {
+	if storedServiceRepos, err = tx.RepoStore.List(ctx, database.ReposListOptions{ExternalServiceIDs: []int64{externalServiceID}}); err != nil {
 		return errors.Wrap(err, "syncer.sync.store.list-repos")
 	}
 
@@ -275,7 +268,7 @@ func (s *Syncer) SyncExternalService(ctx context.Context, tx *Store, externalSer
 	// Repo names must be globally unique, if there's conflict we need to deterministically choose one.
 	var conflicting types.Repos
 	if len(sourced) > 0 {
-		if conflicting, err = tx.RepoStore.List(ctx, db.ReposListOptions{Names: sourced.Names()}); err != nil {
+		if conflicting, err = tx.RepoStore.List(ctx, database.ReposListOptions{Names: sourced.Names()}); err != nil {
 			return errors.Wrap(err, "syncer.sync.store.list-repos")
 		}
 		conflicting = conflicting.Filter(func(r *types.Repo) bool {
@@ -289,7 +282,7 @@ func (s *Syncer) SyncExternalService(ctx context.Context, tx *Store, externalSer
 		})
 	}
 
-	// Add the conflicts to the list of repos fetched from the db.
+	// Add the conflicts to the list of repos fetched from the database.
 	// NewDiff modifies the storedServiceRepos slice so we clone it before passing it
 	storedServiceReposAndConflicting := append(storedServiceRepos.Clone(), conflicting...)
 
@@ -398,7 +391,7 @@ func (e ErrAccountSuspended) AccountSuspended() bool {
 }
 
 // We need to resolve name conflicts by deciding whether to keep the newly added repo
-// or the repo that already exists in the db.
+// or the repo that already exists in the database.
 // If the new repo wins, then the old repo is added to the diff.Deleted slice.
 // If the old repo wins, then the new repo is no longer inserted and is filtered out from
 // the diff.Added slice.
@@ -511,7 +504,7 @@ func (s *Syncer) syncRepo(ctx context.Context, store *Store, insertOnly bool, pu
 	}
 
 	var storedSubset types.Repos
-	args := db.ReposListOptions{
+	args := database.ReposListOptions{
 		Names:         []string{string(sourcedRepo.Name)},
 		ExternalRepos: []api.ExternalRepoSpec{sourcedRepo.ExternalRepo},
 		UseOr:         true,
@@ -684,7 +677,7 @@ func (s *Syncer) initialUnmodifiedDiffFromStore(ctx context.Context, store *Stor
 		return
 	}
 
-	stored, err := store.RepoStore.List(ctx, db.ReposListOptions{})
+	stored, err := store.RepoStore.List(ctx, database.ReposListOptions{})
 	if err != nil {
 		if s.Logger != nil {
 			s.Logger.Warn("initialUnmodifiedDiffFromStore store.ListRepos", "error", err)
@@ -817,8 +810,8 @@ func merge(o, n *types.Repo) {
 	o.Update(n)
 }
 
-func (s *Syncer) sourced(ctx context.Context, svcs []*types.ExternalService, onSourced ...func(*types.Repo) error) ([]*types.Repo, error) {
-	srcs, err := s.Sourcer(svcs...)
+func (s *Syncer) sourced(ctx context.Context, svc *types.ExternalService, onSourced ...func(*types.Repo) error) ([]*types.Repo, error) {
+	srcs, err := s.Sourcer(svc)
 	if err != nil {
 		return nil, err
 	}
@@ -852,47 +845,6 @@ func (s *Syncer) makeNewRepoInserter(ctx context.Context, store *Store, publicOn
 		}
 		return nil
 	}, nil
-}
-
-func (s *Syncer) setOrResetLastSyncErr(serviceID int64, perr *error) {
-	var err error
-	if perr != nil {
-		err = *perr
-	}
-
-	s.syncErrorsMu.Lock()
-	defer s.syncErrorsMu.Unlock()
-	if s.syncErrors == nil {
-		s.syncErrors = make(map[int64]error)
-	}
-
-	if err == nil {
-		delete(s.syncErrors, serviceID)
-		return
-	}
-	s.syncErrors[serviceID] = err
-}
-
-// SyncErrors returns all errors that were produced in the last Sync run per
-// external service. If no error was produced, this returns an empty slice.
-// Errors are sorted by external service id.
-func (s *Syncer) SyncErrors() []error {
-	s.syncErrorsMu.Lock()
-	defer s.syncErrorsMu.Unlock()
-
-	ids := make([]int, 0, len(s.syncErrors))
-
-	for id := range s.syncErrors {
-		ids = append(ids, int(id))
-	}
-	sort.Ints(ids)
-
-	sorted := make([]error, len(ids))
-	for i, id := range ids {
-		sorted[i] = s.syncErrors[int64(id)]
-	}
-
-	return sorted
 }
 
 func (s *Syncer) observe(ctx context.Context, family, title string) (context.Context, func(*Diff, *error)) {

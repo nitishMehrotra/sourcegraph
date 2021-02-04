@@ -9,13 +9,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hashicorp/go-multierror"
 	"github.com/inconshreveable/log15"
 	otlog "github.com/opentracing/opentracing-go/log"
 	"github.com/pkg/errors"
 
 	"github.com/sourcegraph/sourcegraph/internal/api"
-	"github.com/sourcegraph/sourcegraph/internal/db"
+	"github.com/sourcegraph/sourcegraph/internal/database"
 	"github.com/sourcegraph/sourcegraph/internal/extsvc"
 	"github.com/sourcegraph/sourcegraph/internal/extsvc/awscodecommit"
 	"github.com/sourcegraph/sourcegraph/internal/extsvc/bitbucketserver"
@@ -78,7 +77,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/enqueue-repo-update", s.handleEnqueueRepoUpdate)
 	mux.HandleFunc("/exclude-repo", s.handleExcludeRepo)
 	mux.HandleFunc("/sync-external-service", s.handleExternalServiceSync)
-	mux.HandleFunc("/status-messages", s.handleStatusMessages)
 	mux.HandleFunc("/enqueue-changeset-sync", s.handleEnqueueChangesetSync)
 	mux.HandleFunc("/schedule-perms-sync", s.handleSchedulePermsSync)
 	return mux
@@ -92,7 +90,7 @@ func (s *Server) handleRepoExternalServices(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	rs, err := s.Store.RepoStore.List(r.Context(), db.ReposListOptions{
+	rs, err := s.Store.RepoStore.List(r.Context(), database.ReposListOptions{
 		IDs: []api.RepoID{req.ID},
 	})
 	if err != nil {
@@ -113,7 +111,7 @@ func (s *Server) handleRepoExternalServices(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	args := db.ExternalServicesListOptions{
+	args := database.ExternalServicesListOptions{
 		IDs:              svcIDs,
 		OrderByDirection: "ASC",
 	}
@@ -136,7 +134,7 @@ func (s *Server) handleExcludeRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rs, err := s.Store.RepoStore.List(r.Context(), db.ReposListOptions{
+	rs, err := s.Store.RepoStore.List(r.Context(), database.ReposListOptions{
 		IDs: []api.RepoID{req.ID},
 	})
 	if err != nil {
@@ -151,7 +149,7 @@ func (s *Server) handleExcludeRepo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	args := db.ExternalServicesListOptions{
+	args := database.ExternalServicesListOptions{
 		Kinds:            types.Repos(rs).Kinds(),
 		OrderByDirection: "ASC",
 	}
@@ -315,7 +313,7 @@ func (s *Server) enqueueRepoUpdate(ctx context.Context, req *protocol.RepoUpdate
 		tr.Finish()
 	}()
 
-	rs, err := s.Store.RepoStore.List(ctx, db.ReposListOptions{Names: []string{string(req.Repo)}})
+	rs, err := s.Store.RepoStore.List(ctx, database.ReposListOptions{Names: []string{string(req.Repo)}})
 	if err != nil {
 		return nil, http.StatusInternalServerError, errors.Wrap(err, "store.list-repos")
 	}
@@ -448,7 +446,7 @@ func (s *Server) repoLookup(ctx context.Context, args protocol.RepoLookupArgs) (
 		return mockRepoLookup(args)
 	}
 
-	list, err := s.Store.RepoStore.List(ctx, db.ReposListOptions{
+	list, err := s.Store.RepoStore.List(ctx, database.ReposListOptions{
 		Names: []string{string(args.Repo)},
 	})
 	if err != nil {
@@ -587,66 +585,6 @@ func (s *Server) remoteRepoSync(ctx context.Context, codehost *extsvc.CodeHost, 
 	return &protocol.RepoLookupResult{
 		Repo: repoInfo,
 	}, nil
-}
-
-func (s *Server) handleStatusMessages(w http.ResponseWriter, r *http.Request) {
-	resp := protocol.StatusMessagesResponse{
-		Messages: []protocol.StatusMessage{},
-	}
-
-	notCloned, err := s.Store.CountNotClonedRepos(r.Context())
-	if err != nil {
-		respond(w, http.StatusInternalServerError, err)
-		return
-	}
-
-	if notCloned != 0 {
-		resp.Messages = append(resp.Messages, protocol.StatusMessage{
-			Cloning: &protocol.CloningProgress{
-				Message: fmt.Sprintf("%d repositories enqueued for cloning...", notCloned),
-			},
-		})
-	}
-
-	for _, e := range s.Syncer.SyncErrors() {
-		if multiErr, ok := errors.Cause(e).(*multierror.Error); ok {
-			for _, e := range multiErr.Errors {
-				if sourceErr, ok := e.(*repos.SourceError); ok {
-					resp.Messages = append(resp.Messages, protocol.StatusMessage{
-						ExternalServiceSyncError: &protocol.ExternalServiceSyncError{
-							Message:           sourceErr.Err.Error(),
-							ExternalServiceId: sourceErr.ExtSvc.ID,
-						},
-					})
-				} else {
-					resp.Messages = append(resp.Messages, protocol.StatusMessage{
-						SyncError: &protocol.SyncError{Message: e.Error()},
-					})
-				}
-			}
-		} else {
-			resp.Messages = append(resp.Messages, protocol.StatusMessage{
-				SyncError: &protocol.SyncError{Message: e.Error()},
-			})
-		}
-	}
-
-	messagesSummary := func() string {
-		cappedMsg := resp.Messages
-		if len(cappedMsg) > 10 {
-			cappedMsg = cappedMsg[:10]
-		}
-
-		jMsg, err := json.MarshalIndent(cappedMsg, "", " ")
-		if err != nil {
-			return "error summarizing messages for logging"
-		}
-		return string(jMsg)
-	}
-
-	log15.Debug("TRACE handleStatusMessages", "messages", log15.Lazy{Fn: messagesSummary})
-
-	respond(w, http.StatusOK, resp)
 }
 
 func (s *Server) handleEnqueueChangesetSync(w http.ResponseWriter, r *http.Request) {
